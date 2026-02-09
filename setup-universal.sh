@@ -12,7 +12,7 @@
 #   - AI-friendly aliases: don't break script behavior
 # ============================================================================
 
-set -eo pipefail
+set -o pipefail  # Fail on pipe errors but continue on single command failures
 
 # ============================================================================
 # GLOBAL VARIABLES
@@ -35,6 +35,8 @@ ARCH=""
 INSTALLED_TOOLS=()
 FAILED_TOOLS=()
 SKIPPED_TOOLS=()
+CRITICAL_FAILURES=()
+ERROR_MESSAGES=()
 
 # ============================================================================
 # COLOR CODES
@@ -88,6 +90,25 @@ log_error() {
 log_skip() {
     log "${CYAN}[SKIP]${NC} $1"
     SKIPPED_TOOLS+=("$2")
+}
+
+log_critical_failure() {
+    log "${RED}${BOLD}[CRITICAL FAILURE]${NC} $1"
+    CRITICAL_FAILURES+=("$2")
+    ERROR_MESSAGES+=("$2: $1")
+}
+
+track_failure() {
+    local tool="$1"
+    local error_msg="$2"
+    local is_critical="${3:-false}"
+    
+    FAILED_TOOLS+=("$tool")
+    ERROR_MESSAGES+=("$tool: $error_msg")
+    
+    if [[ "$is_critical" == "true" ]]; then
+        CRITICAL_FAILURES+=("$tool")
+    fi
 }
 
 log_step() {
@@ -434,10 +455,14 @@ install_python() {
         log_skip "pipx already installed" "pipx"
     else
         log_substep "Installing pipx..."
-        python3 -m pip install --user pipx >> "$LOG_FILE" 2>&1
-        python3 -m pipx ensurepath >> "$LOG_FILE" 2>&1
-        log_success "pipx installed"
-        INSTALLED_TOOLS+=("pipx")
+        if python3 -m pip install --user pipx >> "$LOG_FILE" 2>&1; then
+            python3 -m pipx ensurepath >> "$LOG_FILE" 2>&1 || true
+            log_success "pipx installed"
+            INSTALLED_TOOLS+=("pipx")
+        else
+            log_warning "pipx installation failed (non-critical)"
+            FAILED_TOOLS+=("pipx")
+        fi
     fi
 }
 
@@ -919,8 +944,13 @@ install_zsh() {
     # Install Zsh
     if ! command_exists zsh; then
         log_substep "Installing Zsh..."
-        pkg_install zsh
+        if ! pkg_install zsh; then
+            log_critical_failure "Failed to install Zsh" "zsh"
+            track_failure "zsh" "Package installation failed" "true"
+            return 1
+        fi
         log_success "Zsh installed"
+        INSTALLED_TOOLS+=("zsh")
     else
         log_skip "Zsh already installed" "zsh"
     fi
@@ -931,17 +961,26 @@ install_zsh() {
     
     # zsh-autosuggestions
     if [[ ! -d ~/.zsh/zsh-autosuggestions ]]; then
-        git clone https://github.com/zsh-users/zsh-autosuggestions ~/.zsh/zsh-autosuggestions >> "$LOG_FILE" 2>&1
+        if ! git clone https://github.com/zsh-users/zsh-autosuggestions ~/.zsh/zsh-autosuggestions >> "$LOG_FILE" 2>&1; then
+            log_warning "Failed to install zsh-autosuggestions"
+            track_failure "zsh-autosuggestions" "Git clone failed" "false"
+        fi
     fi
     
     # zsh-syntax-highlighting
     if [[ ! -d ~/.zsh/zsh-syntax-highlighting ]]; then
-        git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.zsh/zsh-syntax-highlighting >> "$LOG_FILE" 2>&1
+        if ! git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.zsh/zsh-syntax-highlighting >> "$LOG_FILE" 2>&1; then
+            log_warning "Failed to install zsh-syntax-highlighting"
+            track_failure "zsh-syntax-highlighting" "Git clone failed" "false"
+        fi
     fi
     
     # zsh-completions
     if [[ ! -d ~/.zsh/zsh-completions ]]; then
-        git clone https://github.com/zsh-users/zsh-completions ~/.zsh/zsh-completions >> "$LOG_FILE" 2>&1
+        if ! git clone https://github.com/zsh-users/zsh-completions ~/.zsh/zsh-completions >> "$LOG_FILE" 2>&1; then
+            log_warning "Failed to install zsh-completions"
+            track_failure "zsh-completions" "Git clone failed" "false"
+        fi
     fi
     
     log_success "Zsh plugins installed"
@@ -1119,15 +1158,31 @@ ZSHRC_EOF
 configure_starship() {
     log_step "Configuring Starship"
     
+    # Check if starship is installed
+    if ! command_exists starship; then
+        log_critical_failure "Starship not installed - cannot configure theme" "starship-config"
+        track_failure "starship-config" "Starship binary not found" "true"
+        return 1
+    fi
+    
     mkdir -p ~/.config
     backup_file ~/.config/starship.toml
     
     # Copy the existing starship.toml from the repo
     if [[ -f "$SCRIPT_DIR/starship.toml" ]]; then
-        cp "$SCRIPT_DIR/starship.toml" ~/.config/starship.toml
-        log_success "Starship configured with Dracula Plus theme"
+        if cp "$SCRIPT_DIR/starship.toml" ~/.config/starship.toml 2>> "$LOG_FILE"; then
+            log_success "Starship configured with Dracula Plus theme"
+            INSTALLED_TOOLS+=("starship-theme")
+        else
+            log_critical_failure "Failed to copy starship.toml" "starship-theme"
+            track_failure "starship-theme" "Failed to copy config file" "true"
+            return 1
+        fi
     else
-        log_warning "starship.toml not found - using default configuration"
+        log_critical_failure "starship.toml not found in $SCRIPT_DIR" "starship-theme"
+        track_failure "starship-theme" "Config file missing from repo" "true"
+        log_warning "Using default Starship configuration instead"
+        return 1
     fi
 }
 
@@ -1435,28 +1490,28 @@ main() {
     echo -e "${YELLOW}Press Enter to continue or Ctrl+C to cancel...${NC}"
     read
     
-    # Run installations
-    setup_base_system
-    install_rust
-    install_nodejs
-    install_node_package_managers
-    install_python
-    install_go
-    install_c_tools
-    install_modern_cli_tools
-    install_extra_tools
-    install_containers
-    install_nerd_fonts
-    install_lazyvim
-    install_zsh
-    configure_starship
-    configure_zsh
-    set_default_shell
-    configure_git
-    setup_ssh_keys
-    setup_dotfiles
-    create_utility_scripts
-    verify_installation
+    # Run installations (continue even if one fails)
+    setup_base_system || log_warning "Base system setup had issues"
+    install_rust || log_warning "Rust installation had issues"
+    install_nodejs || log_warning "Node.js installation had issues"
+    install_node_package_managers || log_warning "Node package managers had issues"
+    install_python || log_warning "Python installation had issues"
+    install_go || log_warning "Go installation had issues"
+    install_c_tools || log_warning "C/C++ tools installation had issues"
+    install_modern_cli_tools || log_warning "Modern CLI tools had issues"
+    install_extra_tools || log_warning "Extra tools installation had issues"
+    install_containers || log_warning "Container installation had issues"
+    install_nerd_fonts || log_warning "Nerd fonts installation had issues"
+    install_lazyvim || log_warning "LazyVim installation had issues"
+    install_zsh || log_warning "Zsh installation had issues"
+    configure_starship || log_warning "Starship configuration had issues"
+    configure_zsh || log_warning "Zsh configuration had issues"
+    set_default_shell || log_warning "Setting default shell had issues"
+    configure_git || log_warning "Git configuration had issues"
+    setup_ssh_keys || log_warning "SSH keys setup had issues"
+    setup_dotfiles || log_warning "Dotfiles setup had issues"
+    create_utility_scripts || log_warning "Utility scripts creation had issues"
+    verify_installation || log_warning "Verification had issues"
     
     # Final summary
     log_step "Installation Complete!"
@@ -1465,8 +1520,51 @@ main() {
     log "${CYAN}⏭️  Skipped: ${#SKIPPED_TOOLS[@]} tools${NC}"
     log "${RED}❌ Failed: ${#FAILED_TOOLS[@]} tools${NC}"
     echo
-    log "${PURPLE}${BOLD}📋 Next Steps:${NC}"
-    log "  1. ${BOLD}Restart your shell${NC} or run: exec zsh"
+    
+    # Check if failed tools list needs attention
+    if [[ ${#FAILED_TOOLS[@]} -gt 0 ]]; then
+        log "${YELLOW}${BOLD}⚠️  Failed installations:${NC}"
+        for i in "${!FAILED_TOOLS[@]}"; do
+            local tool="${FAILED_TOOLS[$i]}"
+            local error="${ERROR_MESSAGES[$i]:-Unknown error}"
+            log "   ${RED}✗${NC} $error"
+        done
+        echo
+        log "${YELLOW}Check detailed log: ${LOG_FILE}${NC}"
+        echo
+    fi
+    
+    # Check critical failures
+    if [[ ${#CRITICAL_FAILURES[@]} -gt 0 ]]; then
+        log "${RED}${BOLD}❌ CRITICAL FAILURES DETECTED:${NC}"
+        for critical in "${CRITICAL_FAILURES[@]}"; do
+            log "   ${RED}▶${NC} $critical - Setup may be incomplete!"
+        done
+        echo
+        log "${RED}${BOLD}CRITICAL COMPONENTS THAT FAILED:${NC}"
+        if [[ " ${CRITICAL_FAILURES[*]} " =~ " zsh " ]]; then
+            log "   ${RED}✗ Zsh${NC} - Shell installation failed"
+        fi
+        if [[ " ${CRITICAL_FAILURES[*]} " =~ " starship " ]] || [[ " ${CRITICAL_FAILURES[*]} " =~ " starship-config " ]] || [[ " ${CRITICAL_FAILURES[*]} " =~ " starship-theme " ]]; then
+            log "   ${RED}✗ Starship / Dracula Plus Theme${NC} - Prompt configuration failed"
+        fi
+        if [[ " ${CRITICAL_FAILURES[*]} " =~ " zsh-config " ]]; then
+            log "   ${RED}✗ Zsh Configuration${NC} - Shell config failed"
+        fi
+        echo
+        log "${YELLOW}${BOLD}⚠️  You may need to manually install critical components${NC}"
+        log "${YELLOW}   Check the log file for error details: ${LOG_FILE}${NC}"
+        echo
+    fi
+    
+    log "${PURPLE}${BOLD}📋 IMPORTANT - Next Steps:${NC}"
+    log ""
+    log "  ${BOLD}${YELLOW}⚠️  CRITICAL: Activate Zsh + Starship now:${NC}"
+    log "     ${GREEN}exec zsh${NC}"
+    log ""
+    log "  ${DIM}(This will reload your shell with Zsh and apply Starship Dracula Plus theme)${NC}"
+    log ""
+    log "  After running 'exec zsh', you can:"
     log "  2. Run ${BOLD}sysinfo${NC} to see system information"
     log "  3. Run ${BOLD}cleanup${NC} to clean up system"
     log "  4. Configure ${BOLD}dotfiles remote${NC}: cd ~/dotfiles && git remote add origin <url>"
@@ -1474,7 +1572,19 @@ main() {
     echo
     log "${CYAN}📝 Log file: ${LOG_FILE}${NC}"
     echo
-    log "${GREEN}${BOLD}🎉 Enjoy your new development environment!${NC}"
+    
+    # Show what shell is active
+    local current_shell=$(basename "$SHELL")
+    if [[ "$current_shell" == "zsh" ]]; then
+        log "${GREEN}${BOLD}✅ Zsh is your default shell!${NC}"
+        log "${GREEN}   Run 'exec zsh' to apply Starship theme now.${NC}"
+    else
+        log "${YELLOW}${BOLD}⚠️  Default shell is still: $current_shell${NC}"
+        log "${YELLOW}   Zsh was set as default. Run 'exec zsh' now, or logout/login.${NC}"
+    fi
+    echo
+    
+    log "${GREEN}${BOLD}🎉 Enjoy your new development environment with Starship Dracula Plus theme!${NC}"
     echo
 }
 
