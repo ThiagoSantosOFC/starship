@@ -1107,9 +1107,13 @@ if [[ $- == *i* ]]; then
     # Starship prompt
     eval "$(starship init zsh)"
     
-    # Initialize modern tools
-    eval "$(zoxide init zsh)" 2>/dev/null || true
-    eval "$(fzf --zsh)" 2>/dev/null || source ~/.fzf.zsh 2>/dev/null || true
+    # Initialize modern tools FIRST (before aliases)
+    if command -v zoxide &>/dev/null; then
+        eval "$(zoxide init zsh)"
+    fi
+    
+    # FZF initialization (correct way)
+    [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
     
     # FZF configuration
     export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git 2>/dev/null || find . -type f'
@@ -1118,17 +1122,36 @@ if [[ $- == *i* ]]; then
     
     # AI-FRIENDLY ALIASES: Original commands always available via \command
     # Modern alternatives (only in interactive mode)
-    alias cat='bat 2>/dev/null || \cat'
-    alias ls='exa --icons 2>/dev/null || \ls --color=auto'
-    alias ll='exa -l --icons 2>/dev/null || \ls -la --color=auto'
-    alias la='exa -la --icons 2>/dev/null || \ls -la --color=auto'
-    alias tree='exa --tree --icons 2>/dev/null || \tree'
-    alias find='fd 2>/dev/null || \find'
-    alias grep='rg 2>/dev/null || \grep --color=auto'
-    alias du='dust 2>/dev/null || \du -h'
-    alias cd='z 2>/dev/null || \cd'
-    alias help='tldr 2>/dev/null || man'
-    alias top='btop 2>/dev/null || htop 2>/dev/null || \top'
+    if command -v bat &>/dev/null; then
+        alias cat='bat'
+    fi
+    if command -v exa &>/dev/null; then
+        alias ls='exa --icons'
+        alias ll='exa -l --icons'
+        alias la='exa -la --icons'
+        alias tree='exa --tree --icons'
+    else
+        alias ls='ls --color=auto'
+        alias ll='ls -la --color=auto'
+        alias la='ls -la --color=auto'
+    fi
+    if command -v fd &>/dev/null; then
+        alias find='fd'
+    fi
+    if command -v rg &>/dev/null; then
+        alias grep='rg'
+    fi
+    if command -v dust &>/dev/null; then
+        alias du='dust'
+    fi
+    if command -v tldr &>/dev/null; then
+        alias help='tldr'
+    fi
+    if command -v btop &>/dev/null; then
+        alias top='btop'
+    elif command -v htop &>/dev/null; then
+        alias top='htop'
+    fi
     
     # Traditional navigation
     alias ..='cd ..'
@@ -1239,11 +1262,6 @@ backup() {
     cp "$1"{,.bak}
 }
 
-# System info on startup (only interactive)
-if [[ $- == *i* ]] && command -v neofetch &>/dev/null; then
-    neofetch
-fi
-
 # PATH optimization
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/go/bin:$HOME/.bun/bin:$PATH"
 export PATH="/usr/local/go/bin:$PATH"
@@ -1301,11 +1319,31 @@ set_default_shell() {
     fi
     
     local zsh_path=$(which zsh)
+    
+    # Try chsh first
     if run_sudo chsh -s "$zsh_path" "$USER" >> "$LOG_FILE" 2>&1; then
-        log_success "Zsh set as default shell"
-        log_warning "Logout and login again to apply changes"
+        log_success "Zsh set as default shell via chsh"
+        log_info "Restart your terminal or run: exec zsh"
+        return 0
+    fi
+    
+    # If chsh fails (common in WSL), add auto-exec to .bashrc
+    log_warning "chsh failed, adding auto-launch to .bashrc instead"
+    
+    if [[ -f ~/.bashrc ]] && ! grep -q "exec zsh" ~/.bashrc; then
+        backup_file ~/.bashrc
+        cat >> ~/.bashrc << 'BASHRC_ZSH'
+
+# Auto-launch Zsh (added by setup-universal.sh)
+if [[ -x /usr/bin/zsh ]] && [[ "$SHELL" != */zsh ]]; then
+    export SHELL=$(which zsh)
+    exec zsh
+fi
+BASHRC_ZSH
+        log_success "Added Zsh auto-launch to ~/.bashrc"
+        log_info "Restart your terminal or run: exec zsh"
     else
-        log_warning "Could not set Zsh as default shell - do manually: chsh -s $(which zsh)"
+        log_info "Zsh auto-launch already in ~/.bashrc"
     fi
 }
 
