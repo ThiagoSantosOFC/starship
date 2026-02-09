@@ -1037,6 +1037,12 @@ install_lazyvim() {
 install_zsh() {
     log_step "Installing and configuring Zsh"
     
+    # Skip Zsh on Git Bash (Windows) - only use Starship with bash
+    if [[ "$IS_GIT_BASH" == true ]]; then
+        log_skip "Skipping Zsh on Git Bash (use Starship with bash instead)" "zsh"
+        return 0
+    fi
+    
     # Install Zsh
     if ! command_exists zsh; then
         log_substep "Installing Zsh..."
@@ -1093,6 +1099,12 @@ install_zsh() {
 
 configure_zsh() {
     log_step "Configuring Zsh"
+    
+    # Skip on Git Bash (Windows)
+    if [[ "$IS_GIT_BASH" == true ]]; then
+        log_skip "Skipping Zsh config on Git Bash (use bash with Starship)" "zsh-config"
+        return 0
+    fi
     
     backup_file ~/.zshrc
     
@@ -1368,8 +1380,62 @@ configure_starship() {
     fi
 }
 
+configure_starship_bash() {
+    log_step "Configuring Starship for Git Bash"
+    
+    # This function runs ONLY on Git Bash (Windows)
+    if [[ "$IS_GIT_BASH" != true ]]; then
+        return 0
+    fi
+    
+    # Check if starship init is already in .bashrc
+    if [[ -f ~/.bashrc ]] && grep -q "starship init bash" ~/.bashrc; then
+        log_skip "Starship already configured in .bashrc" "starship-bash"
+        return 0
+    fi
+    
+    backup_file ~/.bashrc
+    
+    # Add Starship to .bashrc
+    cat >> ~/.bashrc << 'BASHRC_STARSHIP'
+
+# ============================================================================
+# Starship prompt (added by setup-universal.sh)
+# ============================================================================
+eval "$(starship init bash)"
+
+# Modern tools initialization
+if command -v zoxide >/dev/null 2>&1; then
+    eval "$(zoxide init bash --cmd cd)"
+fi
+
+# fzf (if installed)
+[ -f ~/.fzf.bash ] && source ~/.fzf.bash
+
+# PATH
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/go/bin:$HOME/.bun/bin:$PATH"
+
+# NVM
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+# Cargo
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+BASHRC_STARSHIP
+    
+    log_success "Starship configured for Git Bash in ~/.bashrc"
+    log_info "Restart Git Bash or run: source ~/.bashrc"
+}
+
 set_default_shell() {
     log_step "Setting Zsh as default shell"
+    
+    # Skip on Git Bash (Windows) - keep using bash
+    if [[ "$IS_GIT_BASH" == true ]]; then
+        log_skip "Keeping bash as default on Git Bash (Windows)" "default_shell"
+        return 0
+    fi
     
     local current_shell=$(basename "$SHELL")
     if [[ "$current_shell" == "zsh" ]]; then
@@ -1675,8 +1741,12 @@ apply_configs_only() {
     
     log_step "Applying configurations without reinstalling tools"
     
+    # Detect environment first
+    detect_os
+    
     # Only apply configs
     configure_starship || log_warning "Starship configuration had issues"
+    configure_starship_bash || log_warning "Starship bash configuration had issues"
     configure_zsh || log_warning "Zsh configuration had issues"
     set_default_shell || log_warning "Setting default shell had issues"
     
@@ -1684,9 +1754,17 @@ apply_configs_only() {
     echo
     log "${GREEN}${BOLD}✅ Configurations applied successfully${NC}"
     echo
-    log "${YELLOW}${BOLD}Next steps:${NC}"
-    log "  1. Reload your shell: ${BOLD}exec zsh${NC}"
-    log "  2. Verify: ${BOLD}echo \$SHELL${NC}"
+    
+    # Different messages for Git Bash vs Linux/WSL
+    if [[ "$IS_GIT_BASH" == true ]]; then
+        log "${YELLOW}${BOLD}Next steps (Git Bash):${NC}"
+        log "  1. Restart Git Bash or run: ${BOLD}source ~/.bashrc${NC}"
+        log "  2. Starship theme will be active with bash"
+    else
+        log "${YELLOW}${BOLD}Next steps:${NC}"
+        log "  1. Reload your shell: ${BOLD}exec zsh${NC}"
+        log "  2. Verify: ${BOLD}echo \$SHELL${NC}"
+    fi
     echo
 }
 
@@ -1739,6 +1817,7 @@ main() {
     install_lazyvim || log_warning "LazyVim installation had issues"
     install_zsh || log_warning "Zsh installation had issues"
     configure_starship || log_warning "Starship configuration had issues"
+    configure_starship_bash || log_warning "Starship bash configuration had issues"
     configure_zsh || log_warning "Zsh configuration had issues"
     set_default_shell || log_warning "Setting default shell had issues"
     configure_git || log_warning "Git configuration had issues"
