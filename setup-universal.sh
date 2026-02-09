@@ -1108,8 +1108,12 @@ if [[ $- == *i* ]]; then
     eval "$(starship init zsh)"
     
     # Initialize modern tools FIRST (before aliases)
+    # zoxide: smart cd alternative (use 'z' command, NOT cd)
     if command -v zoxide &>/dev/null; then
-        eval "$(zoxide init zsh)"
+        eval "$(zoxide init zsh --no-cmd)"
+        # Create 'z' alias manually (don't override cd)
+        alias z='__zoxide_z'
+        alias zi='__zoxide_zi'
     fi
     
     # FZF initialization (correct way)
@@ -1600,6 +1604,38 @@ verify_installation() {
 }
 
 # ============================================================================
+# CONFIG-ONLY MODE
+# ============================================================================
+
+apply_configs_only() {
+    log_init
+    
+    echo -e "${CYAN}${BOLD}"
+    echo "╔════════════════════════════════════════════════════════════════════════╗"
+    echo "║                                                                        ║"
+    echo "║           🔧 APPLY CONFIGURATIONS ONLY (NO INSTALLS)                  ║"
+    echo "║                                                                        ║"
+    echo "╚════════════════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    
+    log_step "Applying configurations without reinstalling tools"
+    
+    # Only apply configs
+    configure_starship || log_warning "Starship configuration had issues"
+    configure_zsh || log_warning "Zsh configuration had issues"
+    set_default_shell || log_warning "Setting default shell had issues"
+    
+    log_step "Configuration Complete!"
+    echo
+    log "${GREEN}${BOLD}✅ Configurations applied successfully${NC}"
+    echo
+    log "${YELLOW}${BOLD}Next steps:${NC}"
+    log "  1. Reload your shell: ${BOLD}exec zsh${NC}"
+    log "  2. Verify: ${BOLD}echo \$SHELL${NC}"
+    echo
+}
+
+# ============================================================================
 # MAIN FUNCTION
 # ============================================================================
 
@@ -1733,5 +1769,25 @@ main() {
 
 # Run main if script is executed directly
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
+    # Parse command line arguments
+    case "${1:-}" in
+        --config-only|--configs-only|-c)
+            apply_configs_only
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --config-only, -c    Apply configurations only (skip installations)"
+            echo "  --help, -h           Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0                   # Full installation"
+            echo "  $0 --config-only     # Only apply .zshrc and starship configs"
+            ;;
+        *)
+            main "$@"
+            ;;
+    esac
 fi
+
