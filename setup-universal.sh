@@ -121,6 +121,80 @@ log_substep() {
 }
 
 # ============================================================================
+# PROGRESS INDICATOR FUNCTIONS
+# ============================================================================
+
+# Show a spinner while a command runs
+show_progress() {
+    local pid=$1
+    local message=$2
+    local delay=0.1
+    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    
+    while kill -0 $pid 2>/dev/null; do
+        local temp=${spinstr#?}
+        printf " ${CYAN}[%c]${NC} %s\r" "$spinstr" "$message"
+        spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+    done
+    
+    # Clear the line
+    printf "\r%*s\r" $(tput cols) ""
+}
+
+# Run a command with a progress indicator
+run_with_progress() {
+    local message="$1"
+    local estimated_time="$2"
+    shift 2
+    local cmd="$@"
+    
+    log_substep "$message (may take $estimated_time)..."
+    
+    # Run command in background and show progress
+    eval "$cmd" >> "$LOG_FILE" 2>&1 &
+    local cmd_pid=$!
+    
+    show_progress $cmd_pid "$message"
+    
+    # Wait for command to finish and get exit code
+    wait $cmd_pid
+    return $?
+}
+
+# Run cargo install with visual feedback (cargo builds are VERY slow)
+cargo_install_with_progress() {
+    local crate_name="$1"
+    local bin_name="$2"
+    
+    if command_exists "$bin_name"; then
+        log_skip "$bin_name already installed" "$bin_name"
+        return 0
+    fi
+    
+    log_substep "Installing $crate_name (compiling from source: ~5-10 min)..."
+    echo -e "  ${YELLOW}⏳ Compiling Rust code - this is slow but happens only once${NC}"
+    
+    cargo install "$crate_name" >> "$LOG_FILE" 2>&1 &
+    local cargo_pid=$!
+    
+    show_progress $cargo_pid "Compiling $crate_name"
+    
+    wait $cargo_pid
+    local exit_code=$?
+    
+    if [[ $exit_code -eq 0 ]]; then
+        log_success "$bin_name installed"
+        INSTALLED_TOOLS+=("$bin_name")
+        return 0
+    else
+        log_warning "Failed to install $crate_name (see $LOG_FILE)"
+        FAILED_TOOLS+=("$bin_name")
+        return 1
+    fi
+}
+
+# ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
 
@@ -285,17 +359,26 @@ pkg_update() {
 
 pkg_install() {
     local packages=("$@")
+    
+    # Show what we're installing
+    log_substep "Installing: ${packages[*]}"
+    
     case "$PACKAGE_MANAGER" in
         apt)
-            run_sudo apt-get install -y "${packages[@]}" ;;
+            run_sudo apt-get install -y "${packages[@]}" 2>&1 | tee -a "$LOG_FILE" | grep -E "(Setting up|Unpacking|Processing|Reading)" || true
+            ;;
         dnf|yum)
-            run_sudo $PACKAGE_MANAGER install -y "${packages[@]}" ;;
+            run_sudo $PACKAGE_MANAGER install -y "${packages[@]}" 2>&1 | tee -a "$LOG_FILE" | grep -E "(Installing|Complete)" || true
+            ;;
         pacman)
-            run_sudo pacman -S --noconfirm "${packages[@]}" ;;
+            run_sudo pacman -S --noconfirm "${packages[@]}" 2>&1 | tee -a "$LOG_FILE" | grep -E "(installing|upgrading)" || true
+            ;;
         apk)
-            run_sudo apk add "${packages[@]}" ;;
+            run_sudo apk add "${packages[@]}" 2>&1 | tee -a "$LOG_FILE" | grep -E "(Installing|OK)" || true
+            ;;
         zypper)
-            run_sudo zypper install -y "${packages[@]}" ;;
+            run_sudo zypper install -y "${packages[@]}" 2>&1 | tee -a "$LOG_FILE" | grep -E "(Installing|retrieving)" || true
+            ;;
         *)
             log_warning "Cannot install packages without package manager"
             return 1
@@ -370,8 +453,8 @@ install_rust() {
         return 0
     fi
     
-    log_substep "Installing Rust via rustup..."
-    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y >> "$LOG_FILE" 2>&1; then
+    if run_with_progress "Installing Rust via rustup" "~2-3 min" \
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"; then
         # Source cargo env
         source "$HOME/.cargo/env" 2>/dev/null || true
         log_success "Rust installed successfully"
@@ -400,8 +483,14 @@ install_nodejs() {
     
     # Install nvm
     if [[ ! -d "$HOME/.nvm" ]]; then
-        log_substep "Installing nvm..."
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash >> "$LOG_FILE" 2>&1
+        if run_with_progress "Installing nvm" "~30 sec" \
+            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash"; then
+            :
+        else
+            log_error "Failed to install nvm"
+            FAILED_TOOLS+=("nodejs")
+            return 1
+        fi
     fi
     
     # Source nvm
@@ -410,13 +499,17 @@ install_nodejs() {
     
     # Install Node.js LTS
     if command_exists nvm; then
-        log_substep "Installing Node.js LTS..."
-        nvm install --lts >> "$LOG_FILE" 2>&1
-        nvm use --lts >> "$LOG_FILE" 2>&1
-        log_success "Node.js installed successfully"
-        INSTALLED_TOOLS+=("nodejs")
+        if run_with_progress "Installing Node.js LTS" "~2-3 min" \
+            "nvm install --lts && nvm use --lts"; then
+            log_success "Node.js installed successfully"
+            INSTALLED_TOOLS+=("nodejs")
+        else
+            log_error "Failed to install Node.js"
+            FAILED_TOOLS+=("nodejs")
+            return 1
+        fi
     else
-        log_error "Failed to install nvm"
+        log_error "nvm not available after installation"
         FAILED_TOOLS+=("nodejs")
         return 1
     fi
@@ -454,9 +547,8 @@ install_python() {
     if command_exists pipx; then
         log_skip "pipx already installed" "pipx"
     else
-        log_substep "Installing pipx..."
-        if python3 -m pip install --user pipx >> "$LOG_FILE" 2>&1; then
-            python3 -m pipx ensurepath >> "$LOG_FILE" 2>&1 || true
+        if run_with_progress "Installing pipx" "~30 sec" \
+            "python3 -m pip install --user pipx && python3 -m pipx ensurepath"; then
             log_success "pipx installed"
             INSTALLED_TOOLS+=("pipx")
         else
@@ -494,7 +586,9 @@ install_go() {
     fi
     
     cd /tmp
-    if wget -q "$GO_URL" >> "$LOG_FILE" 2>&1; then
+    if run_with_progress "Downloading Go ${GO_VERSION}" "~1-2 min" \
+        "wget -q '$GO_URL'"; then
+        log_substep "Extracting Go to /usr/local..."
         run_sudo rm -rf /usr/local/go
         run_sudo tar -C /usr/local -xzf "$GO_TARBALL" >> "$LOG_FILE" 2>&1
         rm -f "$GO_TARBALL"
@@ -585,7 +679,8 @@ install_modern_cli_tools() {
     
     # Tools via Cargo (Rust)
     if command_exists cargo; then
-        log_substep "Installing Rust-based CLI tools..."
+        log_substep "Installing Rust-based CLI tools (each takes ~5-10 min to compile)..."
+        echo -e "  ${YELLOW}💡 Tip: Rust tools compile from source = slow but powerful!${NC}"
         
         local rust_tools=(
             "bat:bat"                    # cat with syntax highlighting
@@ -602,18 +697,7 @@ install_modern_cli_tools() {
             local crate_name="${tool_spec%%:*}"
             local bin_name="${tool_spec##*:}"
             
-            if command_exists "$bin_name"; then
-                log_skip "$bin_name already installed" "$bin_name"
-            else
-                log_substep "Installing $crate_name..."
-                if cargo install "$crate_name" >> "$LOG_FILE" 2>&1; then
-                    log_success "$bin_name installed"
-                    INSTALLED_TOOLS+=("$bin_name")
-                else
-                    log_warning "Failed to install $crate_name"
-                    FAILED_TOOLS+=("$bin_name")
-                fi
-            fi
+            cargo_install_with_progress "$crate_name" "$bin_name"
         done
     else
         log_warning "Cargo not found - skipping Rust-based tools"
@@ -633,12 +717,15 @@ install_extra_tools() {
     if command_exists fzf; then
         log_skip "fzf already installed" "fzf"
     else
-        log_substep "Installing fzf..."
         if [[ ! -d ~/.fzf ]]; then
-            git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf >> "$LOG_FILE" 2>&1
-            ~/.fzf/install --all >> "$LOG_FILE" 2>&1
-            log_success "fzf installed"
-            INSTALLED_TOOLS+=("fzf")
+            if run_with_progress "Installing fzf" "~30 sec" \
+                "git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf && ~/.fzf/install --all"; then
+                log_success "fzf installed"
+                INSTALLED_TOOLS+=("fzf")
+            else
+                log_warning "Failed to install fzf"
+                FAILED_TOOLS+=("fzf")
+            fi
         fi
     fi
     
@@ -646,9 +733,9 @@ install_extra_tools() {
     if command_exists btop; then
         log_skip "btop already installed" "btop"
     else
-        log_substep "Installing btop..."
         local btop_url="https://github.com/aristocratos/btop/releases/latest/download/btop-x86_64-linux-musl.tbz"
-        if curl -sL "$btop_url" | tar -xj -C /tmp 2>> "$LOG_FILE"; then
+        if run_with_progress "Downloading and installing btop" "~30 sec" \
+            "curl -sL '$btop_url' | tar -xj -C /tmp"; then
             run_sudo mkdir -p /usr/local/bin
             run_sudo mv /tmp/btop/bin/btop /usr/local/bin/ 2>/dev/null || true
             run_sudo chmod +x /usr/local/bin/btop
@@ -664,8 +751,8 @@ install_extra_tools() {
     if command_exists tldr; then
         log_skip "tldr already installed" "tldr"
     elif command_exists npm; then
-        log_substep "Installing tldr..."
-        if npm install -g tldr >> "$LOG_FILE" 2>&1; then
+        if run_with_progress "Installing tldr" "~30 sec" \
+            "npm install -g tldr"; then
             log_success "tldr installed"
             INSTALLED_TOOLS+=("tldr")
         else
@@ -677,14 +764,17 @@ install_extra_tools() {
     if command_exists lazygit; then
         log_skip "lazygit already installed" "lazygit"
     else
-        log_substep "Installing lazygit..."
+        log_substep "Getting lazygit latest version..."
         local lazygit_version=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
         if [[ -n "$lazygit_version" ]]; then
-            curl -sLo /tmp/lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${lazygit_version}_Linux_x86_64.tar.gz" >> "$LOG_FILE" 2>&1
-            run_sudo tar xf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit
-            rm -f /tmp/lazygit.tar.gz
-            log_success "lazygit installed"
-            INSTALLED_TOOLS+=("lazygit")
+            if run_with_progress "Installing lazygit v${lazygit_version}" "~30 sec" \
+                "curl -sLo /tmp/lazygit.tar.gz 'https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${lazygit_version}_Linux_x86_64.tar.gz' && run_sudo tar xf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit && rm -f /tmp/lazygit.tar.gz"; then
+                log_success "lazygit installed"
+                INSTALLED_TOOLS+=("lazygit")
+            else
+                log_warning "Failed to install lazygit"
+                FAILED_TOOLS+=("lazygit")
+            fi
         else
             log_warning "Failed to get lazygit version"
             FAILED_TOOLS+=("lazygit")
@@ -695,15 +785,17 @@ install_extra_tools() {
     if command_exists delta; then
         log_skip "delta already installed" "delta"
     else
-        log_substep "Installing delta..."
+        log_substep "Getting delta latest version..."
         local delta_version=$(curl -s "https://api.github.com/repos/dandavison/delta/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ -n "$delta_version" ]]; then
-            curl -sLo /tmp/delta.tar.gz "https://github.com/dandavison/delta/releases/latest/download/delta-${delta_version}-x86_64-unknown-linux-musl.tar.gz" >> "$LOG_FILE" 2>&1
-            tar xf /tmp/delta.tar.gz -C /tmp >> "$LOG_FILE" 2>&1
-            run_sudo mv /tmp/delta-*/delta /usr/local/bin/ 2>/dev/null || true
-            rm -rf /tmp/delta*
-            log_success "delta installed"
-            INSTALLED_TOOLS+=("delta")
+            if run_with_progress "Installing delta ${delta_version}" "~30 sec" \
+                "curl -sLo /tmp/delta.tar.gz 'https://github.com/dandavison/delta/releases/latest/download/delta-${delta_version}-x86_64-unknown-linux-musl.tar.gz' && tar xf /tmp/delta.tar.gz -C /tmp && run_sudo mv /tmp/delta-*/delta /usr/local/bin/ 2>/dev/null && rm -rf /tmp/delta*"; then
+                log_success "delta installed"
+                INSTALLED_TOOLS+=("delta")
+            else
+                log_warning "Failed to install delta"
+                FAILED_TOOLS+=("delta")
+            fi
         else
             log_warning "Failed to get delta version"
             FAILED_TOOLS+=("delta")
@@ -740,16 +832,18 @@ install_node_package_managers() {
             log_info "Using npm only"
             ;;
         2)
-            log_substep "Installing yarn..."
-            npm install -g yarn >> "$LOG_FILE" 2>&1 && log_success "yarn installed" || log_warning "yarn installation failed"
+            run_with_progress "Installing yarn" "~30 sec" \
+                "npm install -g yarn" && \
+                log_success "yarn installed" || log_warning "yarn installation failed"
             ;;
         3)
-            log_substep "Installing pnpm..."
-            npm install -g pnpm >> "$LOG_FILE" 2>&1 && log_success "pnpm installed" || log_warning "pnpm installation failed"
+            run_with_progress "Installing pnpm" "~30 sec" \
+                "npm install -g pnpm" && \
+                log_success "pnpm installed" || log_warning "pnpm installation failed"
             ;;
         4)
-            log_substep "Installing bun..."
-            if curl -fsSL https://bun.sh/install | bash >> "$LOG_FILE" 2>&1; then
+            if run_with_progress "Installing bun" "~1 min" \
+                "curl -fsSL https://bun.sh/install | bash"; then
                 export PATH="$HOME/.bun/bin:$PATH"
                 log_success "bun installed"
             else
@@ -758,8 +852,10 @@ install_node_package_managers() {
             ;;
         5)
             log_substep "Installing all package managers..."
-            npm install -g yarn pnpm >> "$LOG_FILE" 2>&1
-            curl -fsSL https://bun.sh/install | bash >> "$LOG_FILE" 2>&1
+            run_with_progress "Installing yarn and pnpm" "~1 min" \
+                "npm install -g yarn pnpm"
+            run_with_progress "Installing bun" "~1 min" \
+                "curl -fsSL https://bun.sh/install | bash"
             export PATH="$HOME/.bun/bin:$PATH"
             log_success "All package managers installed"
             ;;
@@ -858,12 +954,10 @@ install_nerd_fonts() {
             continue
         fi
         
-        log_substep "Installing $font_name Nerd Font..."
         local font_url="https://github.com/ryanoasis/nerd-fonts/releases/latest/download/${font_file}.zip"
         
-        if wget -q "$font_url" -O "/tmp/${font_file}.zip" >> "$LOG_FILE" 2>&1; then
-            unzip -qo "/tmp/${font_file}.zip" -d "$fonts_dir" >> "$LOG_FILE" 2>&1
-            rm -f "/tmp/${font_file}.zip"
+        if run_with_progress "Downloading $font_name Nerd Font" "~1-2 min" \
+            "wget -q '$font_url' -O '/tmp/${font_file}.zip' && unzip -qo '/tmp/${font_file}.zip' -d '$fonts_dir' && rm -f '/tmp/${font_file}.zip'"; then
             log_success "$font_name Nerd Font installed"
         else
             log_warning "Failed to install $font_name Nerd Font"
@@ -927,11 +1021,13 @@ install_lazyvim() {
     fi
     
     # Install LazyVim
-    log_substep "Installing LazyVim starter config..."
-    git clone https://github.com/LazyVim/starter ~/.config/nvim >> "$LOG_FILE" 2>&1
-    rm -rf ~/.config/nvim/.git
-    
-    log_success "LazyVim installed - run 'nvim' to complete setup"
+    if run_with_progress "Cloning LazyVim starter config" "~30 sec" \
+        "git clone https://github.com/LazyVim/starter ~/.config/nvim && rm -rf ~/.config/nvim/.git"; then
+        log_success "LazyVim installed - run 'nvim' to complete setup"
+    else
+        log_warning "Failed to clone LazyVim"
+        FAILED_TOOLS+=("lazyvim")
+    fi
 }
 
 # ============================================================================
@@ -961,7 +1057,10 @@ install_zsh() {
     
     # zsh-autosuggestions
     if [[ ! -d ~/.zsh/zsh-autosuggestions ]]; then
-        if ! git clone https://github.com/zsh-users/zsh-autosuggestions ~/.zsh/zsh-autosuggestions >> "$LOG_FILE" 2>&1; then
+        if run_with_progress "Installing zsh-autosuggestions" "~10 sec" \
+            "git clone https://github.com/zsh-users/zsh-autosuggestions ~/.zsh/zsh-autosuggestions"; then
+            :
+        else
             log_warning "Failed to install zsh-autosuggestions"
             track_failure "zsh-autosuggestions" "Git clone failed" "false"
         fi
@@ -969,7 +1068,10 @@ install_zsh() {
     
     # zsh-syntax-highlighting
     if [[ ! -d ~/.zsh/zsh-syntax-highlighting ]]; then
-        if ! git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.zsh/zsh-syntax-highlighting >> "$LOG_FILE" 2>&1; then
+        if run_with_progress "Installing zsh-syntax-highlighting" "~10 sec" \
+            "git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.zsh/zsh-syntax-highlighting"; then
+            :
+        else
             log_warning "Failed to install zsh-syntax-highlighting"
             track_failure "zsh-syntax-highlighting" "Git clone failed" "false"
         fi
@@ -977,7 +1079,10 @@ install_zsh() {
     
     # zsh-completions
     if [[ ! -d ~/.zsh/zsh-completions ]]; then
-        if ! git clone https://github.com/zsh-users/zsh-completions ~/.zsh/zsh-completions >> "$LOG_FILE" 2>&1; then
+        if run_with_progress "Installing zsh-completions" "~10 sec" \
+            "git clone https://github.com/zsh-users/zsh-completions ~/.zsh/zsh-completions"; then
+            :
+        else
             log_warning "Failed to install zsh-completions"
             track_failure "zsh-completions" "Git clone failed" "false"
         fi
