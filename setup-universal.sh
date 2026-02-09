@@ -1096,117 +1096,153 @@ configure_zsh() {
     
     backup_file ~/.zshrc
     
-    # Create .zshrc with AI-friendly aliases
+    # Create .zshrc with optimized configuration
     cat > ~/.zshrc << 'ZSHRC_EOF'
 # ============================================================================
-# 🎨 Universal Zsh Configuration - AI-friendly
+# 🎨 Configuração Zsh Otimizada (Universal Linux/WSL)
 # ============================================================================
 
-# Only use aliases in interactive shells (don't break scripts/AI tools)
-if [[ $- == *i* ]]; then
-    # Starship prompt
-    eval "$(starship init zsh)"
-    
-    # Initialize modern tools FIRST (before aliases)
-    # zoxide: smart cd alternative (use 'z' command, NOT cd)
-    if command -v zoxide &>/dev/null; then
-        eval "$(zoxide init zsh --no-cmd)"
-        # Create 'z' alias manually (don't override cd)
-        alias z='__zoxide_z'
-        alias zi='__zoxide_zi'
-    fi
-    
-    # FZF initialization (correct way)
-    [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
-    
-    # FZF configuration
-    export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git 2>/dev/null || find . -type f'
-    export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
-    export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git 2>/dev/null || find . -type d'
-    
-    # AI-FRIENDLY ALIASES: Original commands always available via \command
-    # Modern alternatives (only in interactive mode)
-    if command -v bat &>/dev/null; then
-        alias cat='bat'
-    fi
-    if command -v exa &>/dev/null; then
-        alias ls='exa --icons'
-        alias ll='exa -l --icons'
-        alias la='exa -la --icons'
-        alias tree='exa --tree --icons'
-    else
-        alias ls='ls --color=auto'
-        alias ll='ls -la --color=auto'
-        alias la='ls -la --color=auto'
-    fi
-    if command -v fd &>/dev/null; then
-        alias find='fd'
-    fi
-    if command -v rg &>/dev/null; then
-        alias grep='rg'
-    fi
-    if command -v dust &>/dev/null; then
-        alias du='dust'
-    fi
-    if command -v tldr &>/dev/null; then
-        alias help='tldr'
-    fi
-    if command -v btop &>/dev/null; then
-        alias top='btop'
-    elif command -v htop &>/dev/null; then
-        alias top='htop'
-    fi
-    
-    # Traditional navigation
-    alias ..='cd ..'
-    alias ...='cd ../..'
-    alias ....='cd ../../..'
-    alias ~='cd ~'
-    alias -- -='cd -'
-    alias c='clear'
-    alias h='history'
-    alias j='jobs -l'
-    
-    # Git aliases
-    alias g='git'
-    alias ga='git add'
-    alias gaa='git add --all'
-    alias gc='git commit -v'
-    alias gca='git commit -v -a'
-    alias gcm='git commit -m'
-    alias gco='git checkout'
-    alias gd='git diff'
-    alias gl='git pull'
-    alias gp='git push'
-    alias gst='git status'
-    alias glog='git log --oneline --decorate --graph'
-    alias lg='lazygit 2>/dev/null || git log --graph --pretty=format:"%h -%d %s (%cr) <%an>" --abbrev-commit'
-    
-    # System aliases
-    alias ports='netstat -tulanp'
-    alias meminfo='free -m -l -t'
-    alias ps='ps auxf'
-    alias psg='ps aux | grep -v grep | grep -i -E'
-    alias myip='curl http://ipecho.net/plain; echo'
-    alias logs='sudo journalctl -f'
-    
-    # Package manager aliases (distro-agnostic)
-    if command -v apt-get &>/dev/null; then
-        alias update='sudo apt-get update && sudo apt-get upgrade'
-        alias install='sudo apt-get install'
-        alias search='apt-cache search'
-    elif command -v dnf &>/dev/null; then
-        alias update='sudo dnf update'
-        alias install='sudo dnf install'
-        alias search='dnf search'
-    elif command -v pacman &>/dev/null; then
-        alias update='sudo pacman -Syu'
-        alias install='sudo pacman -S'
-        alias search='pacman -Ss'
-    fi
+# Starship prompt
+eval "$(starship init zsh)"
+
+# Inicializar ferramentas modernas
+if command -v zoxide >/dev/null 2>&1; then
+    eval "$(zoxide init zsh --cmd cd)"
 fi
 
-# History configuration (works in all modes)
+# fzf (somente se instalado)
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# Configurar FZF
+export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git 2>/dev/null || find . -type f'
+export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git 2>/dev/null || find . -type d'
+
+# ============================================================================
+# Funções substituindo aliases problemáticos (fallback garantido)
+# ============================================================================
+
+tree() {
+    if command -v exa >/dev/null 2>&1; then
+        exa --tree --icons "$@"
+    else
+        command tree "$@"
+    fi
+}
+
+find() {
+    if command -v fd >/dev/null 2>&1; then
+        fd "$@"
+    else
+        command find "$@"
+    fi
+}
+
+du() {
+    if command -v dust >/dev/null 2>&1; then
+        dust "$@"
+    else
+        command du -h "$@"
+    fi
+}
+
+help() {
+    if command -v tldr >/dev/null 2>&1; then
+        tldr "$@"
+    else
+        man "$@"
+    fi
+}
+
+top() {
+    if command -v btop >/dev/null 2>&1; then
+        btop "$@"
+    elif command -v htop >/dev/null 2>&1; then
+        htop "$@"
+    else
+        command top "$@"
+    fi
+}
+
+lg() {
+    if command -v lazygit >/dev/null 2>&1; then
+        lazygit "$@"
+    else
+        git log --graph --pretty=format:"%h -%d %s (%cr) <%an>" --abbrev-commit "$@"
+    fi
+}
+
+# ============================================================================
+# ls function with fallback (better than alias)
+# ============================================================================
+unalias ls 2>/dev/null
+ls() {
+    if command -v exa >/dev/null 2>&1; then
+        exa --icons --group-directories-first "$@"
+    else
+        command ls --color=auto "$@"
+    fi
+}
+
+# ============================================================================
+# Aliases simples e diretos (sem lógica extra)
+# ============================================================================
+
+# Navegação rápida
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias ~='cd ~'
+alias -- -='cd -'
+alias c='clear'
+alias h='history'
+alias j='jobs -l'
+
+# Comandos nativos explícitos (para casos de debug)
+alias nls='/bin/ls --color=auto'
+alias ncd='builtin cd'
+alias zi='__zoxide_zi 2>/dev/null || cd'
+
+# Git aliases
+alias g='git'
+alias ga='git add'
+alias gaa='git add --all'
+alias gc='git commit -v'
+alias gca='git commit -v -a'
+alias gcm='git commit -m'
+alias gco='git checkout'
+alias gd='git diff'
+alias gl='git pull'
+alias gp='git push'
+alias gst='git status'
+alias glog='git log --oneline --decorate --graph'
+
+# Sistema aliases
+alias ports='netstat -tulanp'
+alias meminfo='free -m -l -t'
+alias psg='ps aux | grep -v grep | grep -i -E'
+alias myip='curl http://ipecho.net/plain; echo'
+alias logs='sudo journalctl -f'
+
+# Package manager aliases (distro-agnostic)
+if command -v apt-get &>/dev/null; then
+    alias update='sudo apt-get update && sudo apt-get upgrade'
+    alias install='sudo apt-get install'
+    alias search='apt-cache search'
+elif command -v dnf &>/dev/null; then
+    alias update='sudo dnf update'
+    alias install='sudo dnf install'
+    alias search='dnf search'
+elif command -v pacman &>/dev/null; then
+    alias update='sudo pacman -Syu'
+    alias install='sudo pacman -S'
+    alias search='pacman -Ss'
+fi
+
+# ============================================================================
+# Histórico otimizado
+# ============================================================================
+
 HISTFILE=~/.zsh_history
 HISTSIZE=50000
 SAVEHIST=50000
@@ -1220,42 +1256,50 @@ setopt HIST_IGNORE_SPACE
 setopt HIST_VERIFY
 setopt EXTENDED_HISTORY
 
-# Completions
+# ============================================================================
+# Completions e plugins
+# ============================================================================
+
 autoload -U compinit
 compinit -d ~/.zcompdump
 zstyle ':completion:*' menu select
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 
-# Load plugins
+# Plugins
 source ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh 2>/dev/null || true
 source ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null || true
 fpath=(~/.zsh/zsh-completions/src $fpath)
 
-# Vi mode
+# ============================================================================
+# Modo Vi
+# ============================================================================
 bindkey -v
 export KEYTIMEOUT=1
 
-# Useful functions
+# ============================================================================
+# Funções úteis
+# ============================================================================
+
 mkcd() {
     mkdir -p "$1" && cd "$1"
 }
 
 extract() {
-    if [ -f $1 ] ; then
-        case $1 in
-            *.tar.bz2)   tar xjf $1     ;;
-            *.tar.gz)    tar xzf $1     ;;
-            *.bz2)       bunzip2 $1     ;;
-            *.rar)       unrar e $1     ;;
-            *.gz)        gunzip $1      ;;
-            *.tar)       tar xf $1      ;;
-            *.tbz2)      tar xjf $1     ;;
-            *.tgz)       tar xzf $1     ;;
-            *.zip)       unzip $1       ;;
-            *.Z)         uncompress $1  ;;
-            *.7z)        7z x $1        ;;
-            *)     echo "'$1' cannot be extracted via extract()" ;;
+    if [ -f "$1" ] ; then
+        case "$1" in
+            *.tar.bz2)   tar xjf "$1"     ;;
+            *.tar.gz)    tar xzf "$1"     ;;
+            *.bz2)       bunzip2 "$1"     ;;
+            *.rar)       unrar e "$1"     ;;
+            *.gz)        gunzip "$1"      ;;
+            *.tar)       tar xf "$1"      ;;
+            *.tbz2)      tar xjf "$1"     ;;
+            *.tgz)       tar xzf "$1"     ;;
+            *.zip)       unzip "$1"       ;;
+            *.Z)         uncompress "$1"  ;;
+            *.7z)        7z x "$1"        ;;
+            *)           echo "'$1' cannot be extracted via extract()" ;;
         esac
     else
         echo "'$1' is not a valid file"
@@ -1266,7 +1310,9 @@ backup() {
     cp "$1"{,.bak}
 }
 
-# PATH optimization
+# ============================================================================
+# PATH e ambiente
+# ============================================================================
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/go/bin:$HOME/.bun/bin:$PATH"
 export PATH="/usr/local/go/bin:$PATH"
 
@@ -1277,6 +1323,15 @@ export NVM_DIR="$HOME/.nvm"
 
 # Cargo env
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+
+# Colors
+export LS_COLORS='di=1;34:fi=0:ln=1;36:pi=5:so=5:bd=5:cd=5:or=31:mi=0:ex=1;32:*.rpm=90'
+export CLICOLOR=1
+
+# ============================================================================
+# Limite de profundidade de chamadas de função (segurança)
+# ============================================================================
+export FUNCNEST=1000
 ZSHRC_EOF
     
     log_success "Zsh configured with AI-friendly aliases"
